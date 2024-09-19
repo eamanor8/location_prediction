@@ -11,13 +11,20 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import data_loader
 
+# Set up device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 # Parameters
 # ==================================================
-ftype = torch.cuda.FloatTensor
-ltype = torch.cuda.LongTensor
+# ftype = torch.cuda.FloatTensor
+# ltype = torch.cuda.LongTensor
+
+# Now use this device in your model and tensors
+ftype = torch.FloatTensor().to(device)
+ltype = torch.LongTensor().to(device)
 
 # Data loading params
-train_file = "../dataset/loc-gowalla_totalCheckins.txt"
+train_file = "./dataset/loc-gowalla_totalCheckins.txt"
 
 # Model Hyperparameters
 dim = 13    # dimensionality
@@ -48,16 +55,17 @@ class STRNNModule(nn.Module):
         super(STRNNModule, self).__init__()
 
         # embedding:
-        self.user_weight = Variable(torch.randn(user_cnt, dim), requires_grad=False).type(ftype)
-        self.h_0 = Variable(torch.randn(dim, 1), requires_grad=False).type(ftype)
-        self.location_weight = nn.Embedding(len(poi2id), dim)
-        self.perm_weight = nn.Embedding(user_cnt, dim)
+        self.user_weight = Variable(torch.randn(user_cnt, dim), requires_grad=False).to(device)
+        self.h_0 = Variable(torch.randn(dim, 1), requires_grad=False).to(device)
+        self.location_weight = nn.Embedding(len(poi2id), dim).to(device)
+        self.perm_weight = nn.Embedding(user_cnt, dim).to(device)
+        
         # attributes:
-        self.time_upper = nn.Parameter(torch.randn(dim, dim).type(ftype))
-        self.time_lower = nn.Parameter(torch.randn(dim, dim).type(ftype))
-        self.dist_upper = nn.Parameter(torch.randn(dim, dim).type(ftype))
-        self.dist_lower = nn.Parameter(torch.randn(dim, dim).type(ftype))
-        self.C = nn.Parameter(torch.randn(dim, dim).type(ftype))
+        self.time_upper = nn.Parameter(torch.randn(dim, dim).to(device))
+        self.time_lower = nn.Parameter(torch.randn(dim, dim).to(device))
+        self.dist_upper = nn.Parameter(torch.randn(dim, dim).to(device))
+        self.dist_lower = nn.Parameter(torch.randn(dim, dim).to(device))
+        self.C = nn.Parameter(torch.randn(dim, dim).to(device))
 
         # modules:
         self.sigmoid = nn.Sigmoid()
@@ -74,8 +82,7 @@ class STRNNModule(nn.Module):
                 tmp_t = t_w
                 tmp_i = i-idx
             elif t_w.data.cpu().numpy() < trg_t.data.cpu().numpy():
-                if trg_t.data.cpu().numpy() - t_w.data.cpu().numpy() \
-                    < tmp_t.data.cpu().numpy() - trg_t.data.cpu().numpy():
+                if trg_t.data.cpu().numpy() - t_w.data.cpu().numpy() < tmp_t.data.cpu().numpy() - trg_t.data.cpu().numpy():
                     return i-idx
                 else:
                     return tmp_i
@@ -83,7 +90,7 @@ class STRNNModule(nn.Module):
 
     def return_h_tw(self, times, latis, longis, locs, idx):
         w_cap = self.find_w_cap(times, idx)
-        if w_cap is 0:
+        if w_cap == 0:
             return self.h_0
         else:
             self.return_h_tw(times, latis, longis, locs, w_cap)
@@ -93,14 +100,19 @@ class STRNNModule(nn.Module):
         td = times[idx] - times[w_cap:idx]
         ld = self.euclidean_dist(lati, longi)
 
-        data = ','.join(str(e) for e in td.data.cpu().numpy())+"\t"
+        data = ','.join(str(e) for e in td.data.cpu().numpy()) + "\t"
         f.write(data)
-        data = ','.join(str(e) for e in ld.data.cpu().numpy())+"\t"
+        data = ','.join(str(e) for e in ld.data.cpu().numpy()) + "\t"
         f.write(data)
-        data = ','.join(str(e.data.cpu().numpy()[0]) for e in locs[w_cap:idx])+"\t"
+
+        # Check if locs[w_cap:idx] is 0-dimensional
+        data = ','.join(str(e.data.cpu().numpy()[0] if e.data.cpu().numpy().ndim > 0 else e.data.cpu().numpy()) for e in locs[w_cap:idx]) + "\t"
         f.write(data)
-        data = str(locs[idx].data.cpu().numpy()[0])+"\n"
+
+        # Check if locs[idx] is 0-dimensional
+        data = str(locs[idx].data.cpu().numpy()[0] if locs[idx].data.cpu().numpy().ndim > 0 else locs[idx].data.cpu().numpy()) + "\n"
         f.write(data)
+
 
     # get transition matrices by linear interpolation
     def get_location_vector(self, td, ld, locs):
@@ -109,59 +121,57 @@ class STRNNModule(nn.Module):
         lud = up_dist - ld
         ldd = ld - lw_dist
         loc_vec = 0
-        for i in xrange(len(tud)):
-            Tt = torch.div(torch.mul(self.time_upper, tud[i]) + torch.mul(self.time_lower, tdd[i]),
-                            tud[i]+tdd[i])
-            Sl = torch.div(torch.mul(self.dist_upper, lud[i]) + torch.mul(self.dist_lower, ldd[i]),
-                            lud[i]+ldd[i])
+        for i in range(len(tud)):
+            Tt = torch.div(torch.mul(self.time_upper, tud[i]) + torch.mul(self.time_lower, tdd[i]), tud[i]+tdd[i])
+            Sl = torch.div(torch.mul(self.dist_upper, lud[i]) + torch.mul(self.dist_lower, ldd[i]), lud[i]+ldd[i])
             loc_vec += torch.mm(Sl, torch.mm(Tt, torch.t(self.location_weight(locs[i]))))
         return loc_vec
 
     def euclidean_dist(self, x, y):
         return torch.sqrt(torch.pow(x, 2) + torch.pow(y, 2))
 
-    def forward(self, user, times, latis, longis, locs, step):#neg_lati, neg_longi, neg_loc, step):
-        f.write(str(user.data.cpu().numpy()[0])+"\n")
+    def forward(self, user, times, latis, longis, locs, step):  # neg_lati, neg_longi, neg_loc, step
+        f.write(str(user.data.cpu().numpy()[0]) + "\n")
         # positive sampling
         pos_h = self.return_h_tw(times, latis, longis, locs, len(times)-1)
 
 ###############################################################################################
 def run(user, time, lati, longi, loc, step):
 
-    user = Variable(torch.from_numpy(np.asarray([user]))).type(ltype)
-    time = Variable(torch.from_numpy(np.asarray(time))).type(ftype)
-    lati = Variable(torch.from_numpy(np.asarray(lati))).type(ftype)
-    longi = Variable(torch.from_numpy(np.asarray(longi))).type(ftype)
-    loc = Variable(torch.from_numpy(np.asarray(loc))).type(ltype)
+    user = Variable(torch.from_numpy(np.asarray([user]))).to(device)
+    time = Variable(torch.from_numpy(np.asarray(time))).to(device)
+    lati = Variable(torch.from_numpy(np.asarray(lati))).to(device)
+    longi = Variable(torch.from_numpy(np.asarray(longi))).to(device)
+    loc = Variable(torch.from_numpy(np.asarray(loc))).to(device)
 
-    rnn_output = strnn_model(user, time, lati, longi, loc, step)#, neg_lati, neg_longi, neg_loc, step)
+    rnn_output = strnn_model(user, time, lati, longi, loc, step)
 
 ###############################################################################################
-strnn_model = STRNNModule().cuda()
+strnn_model = STRNNModule().to(device)
 
-print "Making train file..."
-f = open("./prepro_train_%s.txt"%lw_time, 'w')
+print("Making train file...")
+f = open("./prepro_train_%s.txt" % lw_time, 'w')
 # Training
 train_batches = list(zip(train_time, train_lati, train_longi, train_loc))
 for j, train_batch in enumerate(tqdm.tqdm(train_batches, desc="train")):
-    batch_time, batch_lati, batch_longi, batch_loc = train_batch#inner_batch)
+    batch_time, batch_lati, batch_longi, batch_loc = train_batch
     run(train_user[j], batch_time, batch_lati, batch_longi, batch_loc, step=1)
 f.close()
 
-print "Making valid file..."
-f = open("./prepro_valid_%s.txt"%lw_time, 'w')
-# Eavludating
+print("Making valid file...")
+f = open("./prepro_valid_%s.txt" % lw_time, 'w')
+# Evaluating
 valid_batches = list(zip(valid_time, valid_lati, valid_longi, valid_loc))
 for j, valid_batch in enumerate(tqdm.tqdm(valid_batches, desc="valid")):
-    batch_time, batch_lati, batch_longi, batch_loc = valid_batch#inner_batch)
+    batch_time, batch_lati, batch_longi, batch_loc = valid_batch
     run(valid_user[j], batch_time, batch_lati, batch_longi, batch_loc, step=2)
 f.close()
 
-print "Making test file..."
-f = open("./prepro_test_%s.txt"%lw_time, 'w')
+print("Making test file...")
+f = open("./prepro_test_%s.txt" % lw_time, 'w')
 # Testing
 test_batches = list(zip(test_time, test_lati, test_longi, test_loc))
 for j, test_batch in enumerate(tqdm.tqdm(test_batches, desc="test")):
-    batch_time, batch_lati, batch_longi, batch_loc = test_batch#inner_batch)
+    batch_time, batch_lati, batch_longi, batch_loc = test_batch
     run(test_user[j], batch_time, batch_lati, batch_longi, batch_loc, step=3)
 f.close()
